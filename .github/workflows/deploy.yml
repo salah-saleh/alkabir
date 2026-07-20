@@ -1,0 +1,84 @@
+name: Deploy
+
+# Manual control gate: deploys only fire on a pushed tag matching v*, never
+# automatically on every push to main (that's what ci.yml is for -- CI keeps
+# running continuously as a safety net, deploy does not). To ship:
+#   git tag v1.2.3 && git push origin v1.2.3
+# A tag can point at any commit though, including one that never ran CI or
+# failed it -- pushing the tag alone doesn't prove anything. The first job
+# below re-verifies CI succeeded on the exact tagged commit before the
+# second job is allowed to deploy it.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  verify_ci:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Resolve tagged commit
+        id: sha
+        run: echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for CI to pass on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CONCLUSION=$(gh run list --repo "${{ github.repository }}" \
+            --commit "${{ github.sha }}" --workflow CI \
+            --json conclusion --jq '.[0].conclusion // empty')
+
+          if [ -z "$CONCLUSION" ]; then
+            echo "::error::No CI run found for $(echo ${{ github.sha }} | cut -c1-7) -- tag a commit that's on main and has run CI."
+            exit 1
+          fi
+
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::CI's most recent run on $(echo ${{ github.sha }} | cut -c1-7) concluded '$CONCLUSION', not 'success'."
+            exit 1
+          fi
+
+          echo "CI verified green on ${{ github.sha }}"
+
+  deploy:
+    needs: verify_ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify_ci.outputs.sha }}
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.KAMAL_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan "${{ secrets.KAMAL_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy with Kamal
+        env:
+          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: bin/kamal deploy
+
+      - name: Prune old images and containers
+        env:
+          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: bin/kamal prune all

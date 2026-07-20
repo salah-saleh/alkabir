@@ -1,0 +1,44 @@
+# Name of your application. Used to uniquely configure containers.
+service: alkabir
+
+# Name of the container image on GHCR (owner/repo, lowercased).
+image: salah-saleh/alkabir
+
+# Deploy to the same GCP VM that already runs fly-with-pets (and an
+# unrelated WireGuard VPN). Both apps share the one kamal-proxy container
+# already running there -- Kamal registers each app's own domain with it,
+# no separate proxy or port needed per app.
+servers:
+  web:
+    - 34.32.41.18
+
+# Real domain this time (unlike fly-with-pets' IP-only test), so
+# kamal-proxy can automatically issue and renew a Let's Encrypt cert.
+# Requires config.assume_ssl-equivalent handling: this is a static nginx
+# site with no Rails force_ssl to worry about, nginx just serves plain
+# HTTP and kamal-proxy terminates TLS in front of it.
+proxy:
+  hosts:
+    - alkabir.online
+    - www.alkabir.online
+  app_port: 80
+  ssl: true
+  healthcheck:
+    path: /up
+
+# GitHub Container Registry -- tied to the same GitHub account/repo, so auth
+# in CI is just the built-in GITHUB_TOKEN (no separate registry account).
+registry:
+  server: ghcr.io
+  username: salah-saleh
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# SSH as the same non-root user already in the VM's docker group (avoids
+# needing sudo for every Kamal-issued docker command) -- same as fly-with-pets.
+ssh:
+  user: sam
+
+# Configure the image builder.
+builder:
+  arch: amd64
